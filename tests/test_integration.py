@@ -67,9 +67,13 @@ async def rabbit(sessions):
     dlq = await channel.get_queue(settings.payments_dlq)
     await queue.purge()
     await dlq.purge()
-    yield queue, dlq
-    await broker.close()
-    await connection.close()
+    try:
+        yield queue, dlq
+    finally:
+        try:
+            await broker.stop()
+        finally:
+            await connection.close()
 
 
 async def create_payment(sessions, payload):

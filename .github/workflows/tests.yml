@@ -40,24 +40,29 @@ jobs:
       RUN_INTEGRATION_TESTS: "1"
       PYTHONDONTWRITEBYTECODE: "1"
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: requirements.lock
       - run: python -m pip install -r requirements.lock -e '.[dev]'
       - run: ruff check . && ruff format --check .
-      - run: pytest -q
+      - run: pytest -vv
 
   docker:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: cp .env.example .env
       - run: docker compose up --build --wait --wait-timeout 120
       - run: docker compose exec -T api python scripts/smoke_test.py --webhook-host api
+      - name: Check shutdown
+        run: |
+          docker compose stop api consumer
+          docker compose ps --all --format json > compose-state.json
+          python -c "import json; rows = [json.loads(line) for line in open('compose-state.json')]; stopped = [r for r in rows if r['Service'] in ('api', 'consumer')]; assert len(stopped) == 2 and all(r['ExitCode'] == 0 for r in stopped), stopped"
       - if: failure()
         run: docker compose logs
       - if: always()

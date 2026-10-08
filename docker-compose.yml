@@ -41,7 +41,7 @@ services:
     build: .
     env_file:
       - .env
-    command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    command: sh -c "alembic upgrade head && exec uvicorn app.main:app --host 0.0.0.0 --port 8000"
     ports:
       - "8000:8000"
     healthcheck:
@@ -64,7 +64,7 @@ services:
     build: .
     env_file:
       - .env
-    command: sh -c "python -m app.workers.consumer"
+    command: ["python", "-m", "app.workers.consumer"]
     depends_on:
       api:
         condition: service_healthy

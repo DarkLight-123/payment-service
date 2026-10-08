@@ -22,8 +22,10 @@ async def lifespan(_: FastAPI):
         yield
     finally:
         await publisher.stop()
-        await broker.close()
-        await engine.dispose()
+        try:
+            await broker.stop()
+        finally:
+            await engine.dispose()
 
 
 app = FastAPI(
