@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import Select, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,14 +23,16 @@ class OutboxRepository:
             .where(OutboxEvent.status == OutboxStatus.pending)
             .order_by(OutboxEvent.created_at.asc())
             .limit(limit)
+            .with_for_update(skip_locked=True)
         )
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
     async def mark_published(self, event: OutboxEvent) -> None:
         event.status = OutboxStatus.published
-        event.published_at = datetime.now(timezone.utc)
+        event.published_at = datetime.now(UTC)
         event.attempts += 1
+        event.last_error = None
         await self.session.flush()
 
     async def mark_failed(self, event: OutboxEvent, error: str) -> None:

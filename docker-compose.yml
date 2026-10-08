@@ -19,6 +19,7 @@ services:
 
   rabbitmq:
     image: rabbitmq:3.13-management
+    hostname: rabbitmq
     env_file:
       - .env
     environment:
@@ -28,6 +29,8 @@ services:
     ports:
       - "5672:5672"
       - "15672:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
       interval: 5s
@@ -41,6 +44,16 @@ services:
     command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"
     ports:
       - "8000:8000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import os, urllib.request; urllib.request.urlopen(urllib.request.Request('http://localhost:8000/health', headers={'X-API-Key': os.environ['API_KEY']}), timeout=3)"
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
     depends_on:
       postgres:
         condition: service_healthy
@@ -53,10 +66,11 @@ services:
       - .env
     command: sh -c "python -m app.workers.consumer"
     depends_on:
-      postgres:
+      api:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
 
 volumes:
   postgres_data:
+  rabbitmq_data:

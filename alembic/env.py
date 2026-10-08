@@ -2,16 +2,14 @@ from __future__ import annotations
 
 from logging.config import fileConfig
 
-from alembic import context
 from sqlalchemy import engine_from_config, pool
 
+from alembic import context
 from app.core.config import settings
 from app.db.base import Base
-from app.models.outbox import OutboxEvent
-from app.models.payment import Payment
 
 config = context.config
-config.set_main_option("sqlalchemy.url", settings.effective_sync_database_url)
+config.set_main_option("sqlalchemy.url", settings.effective_sync_database_url.replace("%", "%%"))
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)

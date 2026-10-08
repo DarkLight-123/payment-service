@@ -1,252 +1,120 @@
-# Payment Processing Service
+# Payment service
 
-Асинхронный микросервис процессинга платежей, реализованный в рамках тестового задания для Python Backend / Fintech позиции.
+Асинхронная обработка платежей на FastAPI, PostgreSQL и RabbitMQ (FastStream).
+Запрос создаёт платёж и событие в одной транзакции. Outbox publisher отправляет
+событие в RabbitMQ, consumer эмулирует платёжный шлюз и уведомляет клиента через webhook.
 
-## Описание проекта
+## Запуск
 
-Сервис принимает запрос на создание платежа, сохраняет платеж и outbox-событие в одной транзакции, публикует событие в RabbitMQ и обрабатывает его отдельным consumer-процессом. После обработки обновляется статус платежа и отправляется webhook-уведомление.
+Нужны Docker и Docker Compose.
 
-## Стек технологий
-
-- Python 3.12
-- FastAPI
-- Pydantic v2
-- SQLAlchemy 2.0 Async
-- PostgreSQL
-- Alembic
-- RabbitMQ
-- FastStream
-- Docker
-- Docker Compose
-
-## Реализованный функционал
-
-- REST API для создания и получения платежей
-- авторизация по API key через заголовок `X-API-Key`
-- защита от дублей через `Idempotency-Key`
-- асинхронная работа с PostgreSQL
-- миграции базы данных через Alembic
-- публикация событий через RabbitMQ
-- реализация Outbox pattern
-- отдельный consumer для обработки платежей
-- эмуляция внешнего платежного шлюза
-- webhook-уведомления после завершения обработки
-- retry-механизм с экспоненциальной задержкой
-- Dead Letter Queue для неуспешных сообщений
-- контейнеризированный запуск через Docker Compose
-
-## Сценарий обработки
-
-1. Клиент отправляет запрос на создание платежа.
-2. API сохраняет запись о платеже и outbox-событие в одной транзакции.
-3. Outbox publisher публикует событие в RabbitMQ.
-4. Consumer получает сообщение и запускает обработку платежа.
-5. После обработки consumer обновляет статус платежа.
-6. Consumer отправляет webhook по адресу, переданному при создании платежа.
-7. При временных ошибках выполняются повторные попытки обработки.
-8. После исчерпания попыток сообщение отправляется в `payments.dlq`.
-
-## Структура проекта
-
-```text
-app/
-  api/
-  core/
-  db/
-  models/
-  repositories/
-  schemas/
-  services/
-  utils/
-  workers/
-  broker.py
-  main.py
-
-alembic/
-Dockerfile
-docker-compose.yml
-alembic.ini
-pyproject.toml
-README.md
-.env.example
+```bash
+cp .env.example .env
+docker compose up --build --wait
 ```
 
-## Переменные окружения
+В PowerShell вместо `cp` можно использовать `Copy-Item .env.example .env`.
+Миграции применяются при запуске API. Consumer запускается после готовности API.
 
-Конфигурация хранится в файле `.env`.
+- API: http://localhost:8000
+- RabbitMQ Management: http://localhost:15672
+- Ключ API из примера: `dev-api-key`
+- RabbitMQ: `payments_user` / `payments_pass`
 
-Пример переменных окружения приведён в `.env.example`.
+Все маршруты, включая `/health`, `/docs` и `/openapi.json`, требуют заголовок
+`X-API-Key`. При работе со Swagger этот заголовок нужно передавать и для загрузки
+документации, например через настройку заголовков в браузере.
 
-Основные параметры:
+Остановка: `docker compose down`. Данные сохраняются в именованных томах.
+Команда `docker compose down -v` удаляет данные PostgreSQL и RabbitMQ.
 
-- `POSTGRES_DB`
-- `POSTGRES_USER`
-- `POSTGRES_PASSWORD`
-- `POSTGRES_HOST`
-- `POSTGRES_PORT`
-- `RABBITMQ_USER`
-- `RABBITMQ_PASSWORD`
-- `RABBITMQ_HOST`
-- `RABBITMQ_PORT`
-- `RABBITMQ_VHOST`
-- `API_KEY`
+## API
 
-## Запуск проекта
+Создание платежа:
 
-### Windows CMD
-
-```cmd
-copy .env.example .env
-docker compose up --build
+```bash
+curl -X POST http://localhost:8000/api/v1/payments \
+  -H 'Content-Type: application/json' \
+  -H 'X-API-Key: dev-api-key' \
+  -H 'Idempotency-Key: order-001' \
+  -d '{"amount":"1500.50","currency":"RUB","description":"Order 001","metadata":{"order_id":"001"},"webhook_url":"https://example.com/webhook"}'
 ```
 
-### Остановка и удаление контейнеров и томов
+Ответ: `202 Accepted`, `payment_id`, `status`, `created_at`.
+Для проверки webhook укажите доступный consumer URL вместо `example.com`.
+В Windows используйте `curl.exe`; переносы строк в примере рассчитаны на Bash.
 
-```cmd
-docker compose down -v
+Получение платежа:
+
+```bash
+curl 'http://localhost:8000/api/v1/payments/<payment_id>' \
+  -H 'X-API-Key: dev-api-key'
 ```
 
-## Доступные сервисы
+Статус: `pending`, `succeeded` или `failed`. Ответ также содержит сумму,
+валюту, описание, метаданные, ключ идемпотентности, webhook URL и даты.
+Сумма передаётся строкой, чтобы сохранить точность decimal.
 
-После запуска доступны следующие адреса:
+Повторный POST с тем же ключом и тем же телом возвращает существующий платёж.
+Если тело отличается, сервис отвечает `409 Conflict`. Ключ обязателен,
+его длина — от 1 до 128 символов, без пробелов. Поддерживаются RUB, USD и EUR;
+регистр валюты нормализуется. Неверные данные дают `422`, отсутствующий или
+неверный API-ключ — `401`, неизвестный платёж — `404`.
 
-- API: `http://localhost:8000`
-- OpenAPI / Swagger UI: `http://localhost:8000/docs`
-- RabbitMQ Management UI: `http://localhost:15672`
+## Обработка и доставка
 
-Стандартные учетные данные RabbitMQ из `.env.example`:
+В БД две основные таблицы: `payments` и `outbox`.
+Publisher выбирает события с блокировкой `FOR UPDATE SKIP LOCKED`, публикует
+persistent-сообщения с publisher confirms и отмечает их отправленными после
+подтверждения брокера. Ошибка публикации оставляет событие в Outbox для следующей попытки.
+Обменник `payments`, очередь `payments.new` и DLQ `payments.dlq` создаются при старте.
 
-- username: `guest`
-- password: `guest`
+Один consumer обрабатывает сообщения последовательно. Шлюз эмулируется задержкой
+2–5 секунд: 90% платежей получают `succeeded`, 10% — `failed`. Оба результата
+сохраняются в БД и отправляются клиенту. Бизнес-ошибка платежа не означает ошибку доставки.
 
-## API endpoints
+Webhook отправляется POST-запросом с `payment_id`, `status`, `amount`, `currency`,
+`description`, `metadata` и `processed_at`. При ошибке предусмотрены три попытки
+всего, с задержками 1 и 2 секунды перед повторными. Результат оплаты при этом
+не пересчитывается. После третьей ошибки сообщение отклоняется и попадает в DLQ.
 
-### Создание платежа
+Успешная отправка отмечается в `webhook_sent_at`. Повторно доставленное событие
+не запускает уже завершённую оплату и не отправляет отмеченный webhook.
+Доставка имеет семантику at-least-once: сбой между отправкой сообщения и фиксацией
+в БД может привести к повтору. Получателю webhook нужно учитывать `payment_id`
+для защиты от дублей. Счётчик попыток consumer относится к одной доставке сообщения;
+после аварийного перезапуска незавершённая доставка может быть повторена брокером.
 
-`POST /api/v1/payments`
+## Проверка
 
-Обязательные заголовки:
+Проверка запущенного Compose, включая две неудачные отправки webhook и успешную третью:
 
-- `X-API-Key`
-- `Idempotency-Key`
-
-Пример тела запроса:
-
-```json
-{
-  "amount": 1500.50,
-  "currency": "RUB",
-  "description": "Test payment",
-  "metadata": {
-    "order_id": "ORD-1"
-  },
-  "webhook_url": "https://webhook.site/replace-me"
-}
+```bash
+docker compose exec -T api python scripts/smoke_test.py --webhook-host api
 ```
 
-Ожидаемый ответ:
+Для локальных тестов нужен Python 3.12:
 
-- `202 Accepted`
-- `payment_id`
-- `status = pending`
-
-### Получение информации о платеже
-
-`GET /api/v1/payments/{payment_id}`
-
-Обязательный заголовок:
-
-- `X-API-Key`
-
-Ожидаемый ответ:
-
-- `200 OK`
-- данные платежа
-- текущий статус: `pending`, `succeeded` или `failed`
-
-## Ручная проверка
-
-### 1. Создание платежа
-
-```cmd
-curl -X POST "http://localhost:8000/api/v1/payments" ^
-  -H "Content-Type: application/json" ^
-  -H "X-API-Key: <your-api-key>" ^
-  -H "Idempotency-Key: payment-001" ^
-  -d "{\"amount\":1500.50,\"currency\":\"RUB\",\"description\":\"Test payment\",\"metadata\":{\"order_id\":\"ORD-1\"},\"webhook_url\":\"https://webhook.site/replace-me\"}"
+```bash
+python -m venv .venv
+# Активируйте .venv для своей оболочки.
+python -m pip install -r requirements.lock -e '.[dev]'
+pytest -q
+ruff check .
+ruff format --check .
 ```
 
-Ожидаемый результат:
+По умолчанию выполняются тесты API, валидации и consumer. Интеграционные тесты
+используют настоящие PostgreSQL и RabbitMQ. Для них задайте параметры подключения,
+`RUN_INTEGRATION_TESTS=1` и отдельную БД с именем, заканчивающимся на `_test`.
+Эти тесты очищают таблицы тестовой БД.
 
-- HTTP `202 Accepted`
-- в ответе присутствует `payment_id`
-- начальный статус платежа — `pending`
+GitHub Actions выполняет полный набор тестов, проверяет миграции и отдельно
+собирает Docker-образ, запускает Compose и сценарий с webhook.
 
-### 2. Получение информации о платеже
+## Конфигурация
 
-```cmd
-curl -X GET "http://localhost:8000/api/v1/payments/<payment_id>" ^
-  -H "X-API-Key: <your-api-key>"
-```
-
-Ожидаемый результат:
-
-- HTTP `200 OK`
-- через несколько секунд статус становится `succeeded` или `failed`
-
-### 3. Проверка идемпотентности
-
-Нужно повторить тот же `POST` запрос с тем же `Idempotency-Key`.
-
-Ожидаемый результат:
-
-- возвращается тот же `payment_id`
-- дубликат платежа не создаётся
-
-### 4. Проверка webhook
-
-Нужно указать `webhook_url` на временный endpoint, например webhook.site, и создать платеж.
-
-Ожидаемый результат:
-
-- после обработки на указанный endpoint приходит POST-запрос с результатом обработки платежа
-
-### 5. Проверка брокера и очередей
-
-В интерфейсе RabbitMQ нужно проверить очереди:
-
-- `payments.new`
-- `payments.dlq`
-
-## Гарантии и надёжность
-
-### Идемпотентность
-
-`Idempotency-Key` используется для защиты от повторного создания одного и того же платежа при повторной отправке запроса клиентом.
-
-### Outbox Pattern
-
-Запись о платеже и событие для публикации сохраняются в рамках одной транзакции, что исключает потерю события после успешной записи платежа в базу данных.
-
-### Retry и DLQ
-
-Если обработка платежа или отправка webhook завершается ошибкой, consumer выполняет до трёх повторных попыток с экспоненциальной задержкой. Если все попытки исчерпаны, сообщение отправляется в dead-letter очередь `payments.dlq`.
-
-## Что покрывает решение
-
-Реализация покрывает основные требования тестового задания:
-
-- асинхронный API
-- асинхронная работа с базой данных
-- идемпотентное создание платежей
-- событийная обработка через RabbitMQ
-- транзакционный outbox
-- отдельный consumer-процесс
-- webhook-уведомления
-- retry-механизм
-- dead-letter queue
-- контейнеризированное локальное окружение
-
-## Примечание
-
-Проект выполнен как тестовое задание и сфокусирован на корректности бизнес-потока, декомпозиции сервиса и паттернах надёжности. Вне рамок задания остались вопросы production-уровня, такие как полноценная observability-интеграция, централизованное логирование, tracing, метрики, секрет-менеджмент и политика горизонтального масштабирования.
+Параметры находятся в `.env.example`. Подключения можно задать через
+`POSTGRES_*` и `RABBITMQ_*` либо переопределить `DATABASE_URL` и `SYNC_DATABASE_URL`.
+Таймаут webhook, интервал опроса Outbox и параметры эмуляции также настраиваются
+через окружение. Зависимости зафиксированы в `requirements.lock`.

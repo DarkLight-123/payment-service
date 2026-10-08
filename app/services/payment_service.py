@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from decimal import Decimal
 from uuid import UUID
 
 from fastapi import HTTPException, status
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.outbox import OutboxEvent
@@ -26,44 +26,57 @@ class PaymentService:
     ) -> Payment:
         existing_payment = await self.payment_repository.get_by_idempotency_key(idempotency_key)
         if existing_payment is not None:
-            return existing_payment
-
-        normalized_currency = payload.currency.upper()
-        if normalized_currency not in {"RUB", "USD", "EUR"}:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Unsupported currency. Allowed values: RUB, USD, EUR",
-            )
+            return self._check_repeated_request(existing_payment, payload)
 
         payment = Payment(
-            amount=Decimal(payload.amount),
-            currency=normalized_currency,
+            amount=payload.amount,
+            currency=payload.currency,
             description=payload.description,
             metadata_json=payload.metadata,
             idempotency_key=idempotency_key,
             webhook_url=str(payload.webhook_url),
         )
-        await self.payment_repository.add(payment)
-
-        outbox_event = OutboxEvent(
-            aggregate_type="payment",
-            aggregate_id=payment.id,
-            event_type="payment.created",
-            payload={
-                "payment_id": str(payment.id),
-                "amount": str(payment.amount),
-                "currency": payment.currency,
-                "description": payment.description,
-                "metadata": payment.metadata_json,
-                "webhook_url": payment.webhook_url,
-                "status": payment.status.value,
-                "idempotency_key": payment.idempotency_key,
-            },
-        )
-        await self.outbox_repository.add(outbox_event)
-
-        await self.session.commit()
+        try:
+            await self.payment_repository.add(payment)
+            outbox_event = OutboxEvent(
+                aggregate_type="payment",
+                aggregate_id=payment.id,
+                event_type="payment.created",
+                payload={
+                    "payment_id": str(payment.id),
+                    "amount": str(payment.amount),
+                    "currency": payment.currency,
+                    "description": payment.description,
+                    "metadata": payment.metadata_json,
+                    "webhook_url": payment.webhook_url,
+                    "status": payment.status.value,
+                    "idempotency_key": payment.idempotency_key,
+                },
+            )
+            await self.outbox_repository.add(outbox_event)
+            await self.session.commit()
+        except IntegrityError:
+            await self.session.rollback()
+            existing_payment = await self.payment_repository.get_by_idempotency_key(idempotency_key)
+            if existing_payment is None:
+                raise
+            return self._check_repeated_request(existing_payment, payload)
         await self.session.refresh(payment)
+        return payment
+
+    @staticmethod
+    def _check_repeated_request(payment: Payment, payload: PaymentCreateRequest) -> Payment:
+        if (
+            payment.amount != payload.amount
+            or payment.currency != payload.currency
+            or payment.description != payload.description
+            or payment.metadata_json != payload.metadata
+            or payment.webhook_url != str(payload.webhook_url)
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Idempotency-Key was already used with a different request",
+            )
         return payment
 
     async def get_payment(self, payment_id: UUID) -> Payment:

@@ -12,6 +12,10 @@ venv/
 .vscode/
 
 .pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
 .mypy_cache/
 .coverage
 htmlcov/

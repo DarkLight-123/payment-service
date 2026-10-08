@@ -1,0 +1,64 @@
+name: Tests
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: payments_test
+          POSTGRES_USER: payments_user
+          POSTGRES_PASSWORD: payments_pass
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U payments_user -d payments_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      rabbitmq:
+        image: rabbitmq:3.13-management
+        env:
+          RABBITMQ_DEFAULT_USER: payments_user
+          RABBITMQ_DEFAULT_PASS: payments_pass
+        ports: ["5672:5672"]
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      POSTGRES_DB: payments_test
+      POSTGRES_USER: payments_user
+      POSTGRES_PASSWORD: payments_pass
+      POSTGRES_HOST: localhost
+      RABBITMQ_HOST: localhost
+      RABBITMQ_USER: payments_user
+      RABBITMQ_PASSWORD: payments_pass
+      RUN_INTEGRATION_TESTS: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.lock
+      - run: python -m pip install -r requirements.lock -e '.[dev]'
+      - run: ruff check . && ruff format --check .
+      - run: pytest -q
+
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - run: cp .env.example .env
+      - run: docker compose up --build --wait --wait-timeout 120
+      - run: docker compose exec -T api python scripts/smoke_test.py --webhook-host api
+      - if: failure()
+        run: docker compose logs
+      - if: always()
+        run: docker compose down -v

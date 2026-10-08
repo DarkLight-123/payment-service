@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, status
@@ -17,8 +18,10 @@ router = APIRouter(
 @router.post("", status_code=status.HTTP_202_ACCEPTED, response_model=PaymentCreateResponse)
 async def create_payment(
     payload: PaymentCreateRequest,
-    session: AsyncSession = Depends(get_db_session),
-    idempotency_key: str = Header(..., alias="Idempotency-Key"),
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+    idempotency_key: Annotated[
+        str, Header(alias="Idempotency-Key", min_length=1, max_length=128, pattern=r"^\S+$")
+    ],
 ) -> PaymentCreateResponse:
     service = PaymentService(session)
     payment = await service.create_payment(payload, idempotency_key)
@@ -33,7 +36,7 @@ async def create_payment(
 @router.get("/{payment_id}", response_model=PaymentResponse)
 async def get_payment(
     payment_id: UUID,
-    session: AsyncSession = Depends(get_db_session),
+    session: Annotated[AsyncSession, Depends(get_db_session)],
 ) -> PaymentResponse:
     service = PaymentService(session)
     payment = await service.get_payment(payment_id)
